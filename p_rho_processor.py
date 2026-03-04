@@ -3,13 +3,15 @@ P-RHO Matrix Processor - PyQt5 GUI
 """
 
 import sys
+import re
 import numpy as np
 import pandas as pd
 from pathlib import Path
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFileDialog, QTableWidget, QTableWidgetItem,
-    QSlider, QCheckBox, QLineEdit, QGroupBox, QMessageBox, QFrame
+    QSlider, QCheckBox, QLineEdit, QGroupBox, QMessageBox, QFrame,
+    QTabWidget, QProgressBar
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
@@ -36,12 +38,29 @@ class PRhoProcessor(QMainWindow):
             "L.SF", "R.SF", "L.SP", "R.SP"
         ]
 
+        self.batch_folder = None
+        self.batch_pairs = []
+
         self.setup_ui()
 
     def setup_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
-        layout = QVBoxLayout(central)
+        main_layout = QVBoxLayout(central)
+
+        self.tabs = QTabWidget()
+        main_layout.addWidget(self.tabs)
+
+        single_tab = QWidget()
+        self.tabs.addTab(single_tab, "Single File")
+        self._setup_single_tab(single_tab)
+
+        batch_tab = QWidget()
+        self.tabs.addTab(batch_tab, "Batch Processing")
+        self._setup_batch_tab(batch_tab)
+
+    def _setup_single_tab(self, tab):
+        layout = QVBoxLayout(tab)
         layout.setSpacing(15)
 
         # === File Selection ===
@@ -335,6 +354,249 @@ class PRhoProcessor(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Export failed:\n{str(e)}")
             self.export_status.setStyleSheet("color: red;")
+
+    # ===== Batch Processing =====
+
+    def _setup_batch_tab(self, tab):
+        layout = QVBoxLayout(tab)
+        layout.setSpacing(15)
+
+        # === Folder Selection ===
+        folder_group = QGroupBox("1. Select Folder")
+        folder_layout = QVBoxLayout(folder_group)
+        folder_row = QHBoxLayout()
+        folder_row.addWidget(QLabel("Folder:"))
+        self.batch_folder_label = QLabel("No folder selected")
+        self.batch_folder_label.setStyleSheet("color: gray;")
+        folder_row.addWidget(self.batch_folder_label, 1)
+        browse_btn = QPushButton("Browse Folder")
+        browse_btn.clicked.connect(self._select_batch_folder)
+        folder_row.addWidget(browse_btn)
+        folder_layout.addLayout(folder_row)
+        layout.addWidget(folder_group)
+
+        # === Settings ===
+        settings_group = QGroupBox("2. Settings")
+        settings_layout = QVBoxLayout(settings_group)
+
+        thresh_row = QHBoxLayout()
+        thresh_row.addWidget(QLabel("P-value threshold:"))
+        self.batch_thresh_slider = QSlider(Qt.Horizontal)
+        self.batch_thresh_slider.setRange(1, 300)
+        self.batch_thresh_slider.setValue(50)
+        self.batch_thresh_slider.valueChanged.connect(self._update_batch_thresh_label)
+        thresh_row.addWidget(self.batch_thresh_slider)
+        self.batch_thresh_label = QLabel("0.050")
+        self.batch_thresh_label.setMinimumWidth(50)
+        thresh_row.addWidget(self.batch_thresh_label)
+        settings_layout.addLayout(thresh_row)
+
+        self.batch_invert_check = QCheckBox("Invert RHO values (multiply by -1)")
+        self.batch_invert_check.setChecked(True)
+        settings_layout.addWidget(self.batch_invert_check)
+
+        layout.addWidget(settings_group)
+
+        # === Found Files ===
+        found_group = QGroupBox("3. Found File Pairs")
+        found_layout = QVBoxLayout(found_group)
+
+        self.batch_table = QTableWidget()
+        self.batch_table.setColumnCount(3)
+        self.batch_table.setHorizontalHeaderLabels(["P-File", "RHO-File", "Output Name"])
+        self.batch_table.horizontalHeader().setStretchLastSection(True)
+        found_layout.addWidget(self.batch_table)
+
+        self.batch_found_label = QLabel("")
+        found_layout.addWidget(self.batch_found_label)
+
+        layout.addWidget(found_group)
+
+        # === Run ===
+        self.batch_run_btn = QPushButton("Run Batch Processing")
+        self.batch_run_btn.setMinimumHeight(40)
+        self.batch_run_btn.setStyleSheet("font-weight: bold; font-size: 14px;")
+        self.batch_run_btn.clicked.connect(self._run_batch)
+        self.batch_run_btn.setEnabled(False)
+        layout.addWidget(self.batch_run_btn)
+
+        self.batch_progress = QProgressBar()
+        self.batch_progress.setVisible(False)
+        layout.addWidget(self.batch_progress)
+
+        self.batch_status = QLabel("")
+        layout.addWidget(self.batch_status)
+
+    def _update_batch_thresh_label(self, value):
+        self.batch_thresh_label.setText(f"{value / 1000:.3f}")
+
+    def _select_batch_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Folder for Batch Processing")
+        if folder:
+            self.batch_folder = folder
+            self.batch_folder_label.setText(folder)
+            self.batch_folder_label.setStyleSheet("color: green;")
+            self._scan_for_pairs()
+
+    def _scan_for_pairs(self):
+        """Recursively find P-RHO file pairs in the selected folder."""
+        folder = Path(self.batch_folder)
+        self.batch_pairs = []
+
+        p_files = []
+        for f in folder.rglob("*"):
+            if f.is_file() and "-p-" in f.name.lower():
+                p_files.append(f)
+
+        for p_path in sorted(p_files):
+            rho_path = None
+            patterns = [("-p-", "-RHO-"), ("-p-", "-rho-"), ("_p_", "_RHO_"), ("_p_", "_rho_")]
+            for p_pat, rho_pat in patterns:
+                if p_pat in p_path.name:
+                    rho_name = p_path.name.replace(p_pat, rho_pat)
+                    candidate = p_path.parent / rho_name
+                    if candidate.exists():
+                        rho_path = candidate
+                        break
+
+            if rho_path:
+                output_name = self._batch_output_name(p_path.name)
+                self.batch_pairs.append((str(p_path), str(rho_path), output_name))
+
+        self.batch_table.setRowCount(len(self.batch_pairs))
+        for i, (p, r, name) in enumerate(self.batch_pairs):
+            self.batch_table.setItem(i, 0, QTableWidgetItem(Path(p).name))
+            self.batch_table.setItem(i, 1, QTableWidgetItem(Path(r).name))
+            self.batch_table.setItem(i, 2, QTableWidgetItem(name))
+        self.batch_table.resizeColumnsToContents()
+
+        count = len(self.batch_pairs)
+        self.batch_found_label.setText(f"Found {count} file pair(s)")
+        self.batch_found_label.setStyleSheet("color: green;" if count > 0 else "color: red;")
+        self.batch_run_btn.setEnabled(count > 0)
+
+    def _batch_output_name(self, filename):
+        """Generate output name from filename: remove -p-/-RHO- and trailing numerics."""
+        name = Path(filename).stem
+        name = re.split(r'-[pP]-|-[rR][hH][oO]-', name)[0]
+        name = re.sub(r'_\d+\.?\d*$', '', name)
+        name = name.strip('-_')
+        return name if name else "output"
+
+    def _run_batch(self):
+        if not self.batch_pairs:
+            return
+
+        threshold = self.batch_thresh_slider.value() / 1000.0
+        invert = self.batch_invert_check.isChecked()
+
+        self.batch_progress.setVisible(True)
+        self.batch_progress.setMaximum(len(self.batch_pairs))
+        self.batch_progress.setValue(0)
+        self.batch_run_btn.setEnabled(False)
+
+        success = 0
+        errors = []
+
+        for idx, (p_file, rho_file, output_name) in enumerate(self.batch_pairs):
+            try:
+                self._process_and_export_pair(p_file, rho_file, output_name, threshold, invert)
+                success += 1
+            except Exception as e:
+                errors.append(f"{Path(p_file).name}: {str(e)}")
+
+            self.batch_progress.setValue(idx + 1)
+            QApplication.processEvents()
+
+        self.batch_run_btn.setEnabled(True)
+
+        status = f"Completed: {success}/{len(self.batch_pairs)} pairs processed successfully."
+        if errors:
+            status += f"\n{len(errors)} error(s):\n" + "\n".join(errors[:5])
+        self.batch_status.setText(status)
+        self.batch_status.setStyleSheet("color: green;" if not errors else "color: orange;")
+
+        if errors:
+            QMessageBox.warning(self, "Batch Complete with Errors", status)
+        else:
+            QMessageBox.information(self, "Batch Complete", status)
+
+    def _process_and_export_pair(self, p_file, rho_file, output_name, threshold, invert):
+        """Process a single P-RHO pair and export .edge and .xlsx files."""
+        out_dir = Path(p_file).parent
+
+        p_df = pd.read_csv(p_file, sep="\t", header=1)
+        rho_df = pd.read_csv(rho_file, sep="\t", header=1)
+
+        p_df = p_df.apply(pd.to_numeric, errors='coerce')
+        rho_df = rho_df.apply(pd.to_numeric, errors='coerce')
+
+        rho_matrix = rho_df.copy()
+        if invert:
+            rho_matrix = rho_matrix * (-1)
+
+        tril_mask = np.tril(np.ones(p_df.shape), k=0).astype(bool)
+
+        p_filtered = pd.DataFrame(
+            np.where(tril_mask, p_df.values, np.nan),
+            index=p_df.index, columns=p_df.columns
+        )
+        rho_filtered = pd.DataFrame(
+            np.where(tril_mask, rho_matrix.values, np.nan),
+            index=rho_df.index, columns=rho_df.columns
+        )
+
+        p_filtered = p_filtered.where((p_filtered < threshold) & (p_filtered > 0))
+        mask = p_filtered.notna() & rho_filtered.notna()
+        p_filtered = p_filtered.where(mask)
+        rho_filtered = rho_filtered.where(mask)
+
+        # Create table
+        rows = []
+        for i in range(len(p_filtered)):
+            for j in range(len(p_filtered.columns)):
+                p_val = p_filtered.iloc[i, j]
+                rho_val = rho_filtered.iloc[i, j]
+                if pd.notna(p_val) and pd.notna(rho_val):
+                    r1 = p_filtered.index[i]
+                    r2 = p_filtered.columns[j]
+                    if isinstance(r1, (int, float)) and not pd.isna(r1):
+                        r1 = self.region_names[int(r1)] if int(r1) < len(self.region_names) else str(r1)
+                    if isinstance(r2, (int, float)) and not pd.isna(r2):
+                        r2 = self.region_names[int(r2)] if int(r2) < len(self.region_names) else str(r2)
+                    if str(r2).startswith('Unnamed'):
+                        continue
+                    rows.append({
+                        'Region1': str(r1), 'Region2': str(r2),
+                        'P_Values': p_val, 'RHO_Values': rho_val
+                    })
+
+        final_table = pd.DataFrame(rows)
+
+        # Export edge file
+        rho_export = rho_matrix.copy()
+        first_col = rho_export.columns[0]
+        if first_col == 0 or str(first_col).startswith('Unnamed'):
+            rho_export = rho_export.iloc[:, 1:]
+
+        p_vals = p_df.copy()
+        if p_vals.columns[0] == 0 or str(p_vals.columns[0]).startswith('Unnamed'):
+            p_vals = p_vals.iloc[:, 1:]
+
+        sig_mask = (p_vals < threshold) & (p_vals > 0)
+        rho_export = rho_export.where(sig_mask, 0)
+
+        d = rho_export.values
+        d = np.nan_to_num(d, nan=0.0)
+
+        edge_path = out_dir / f"{output_name}.edge"
+        with open(edge_path, 'w') as f:
+            for row in d:
+                line = ' '.join(f"{val:.3f}" for val in row)
+                f.write(line + '\n')
+
+        xlsx_path = out_dir / f"{output_name}.xlsx"
+        final_table.to_excel(xlsx_path, index=False)
 
 
 def main():
