@@ -9,6 +9,8 @@ A PyQt5 GUI application for processing P-value and RHO correlation matrices from
 - Adjustable p-value threshold (0.001 to 0.300)
 - Optional RHO value inversion (multiply by -1)
 - View significant pairs in an interactive table
+- Recursive batch scanning from a selected root folder
+- Batch confirmation dialog before exporting all discovered `-p-` / `-RHO-` pairs
 - Export results as:
   - `.edge` file (matrix format for BrainNet Viewer)
   - `.xlsx` Excel file (long format with Region1, Region2, P-Value, RHO-Value)
@@ -50,6 +52,10 @@ python p_rho_processor.py
 3. **Process**: Click "Process Files" to filter significant correlations
 
 4. **Export**: Enter an output name and click "Export .edge + .xlsx" to save results
+
+### Batch Workflow
+
+Use **Batch Process Folder** to choose a root folder. The app scans subfolders recursively for matching `-p-` / `-RHO-` file pairs, shows how many were found, and asks for confirmation before generating `.edge` and `.xlsx` outputs for all pairs.
 
 ## Input File Format
 

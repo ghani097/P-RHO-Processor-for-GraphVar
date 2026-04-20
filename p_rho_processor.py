@@ -431,14 +431,14 @@ class PRhoProcessor(QMainWindow):
         self.batch_thresh_label.setText(f"{value / 1000:.3f}")
 
     def _select_batch_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Folder for Batch Processing")
+        folder = QFileDialog.getExistingDirectory(self, "Select Root Folder for Batch Processing")
         if folder:
             self.batch_folder = folder
             self.batch_folder_label.setText(folder)
             self.batch_folder_label.setStyleSheet("color: green;")
-            self._scan_for_pairs()
+            self._scan_for_pairs(confirm_and_run=True)
 
-    def _scan_for_pairs(self):
+    def _scan_for_pairs(self, confirm_and_run=False):
         """Recursively find P-RHO file pairs in the selected folder."""
         folder = Path(self.batch_folder)
         self.batch_pairs = []
@@ -474,6 +474,24 @@ class PRhoProcessor(QMainWindow):
         self.batch_found_label.setText(f"Found {count} file pair(s)")
         self.batch_found_label.setStyleSheet("color: green;" if count > 0 else "color: red;")
         self.batch_run_btn.setEnabled(count > 0)
+
+        if confirm_and_run:
+            if count == 0:
+                QMessageBox.information(
+                    self, "No Pairs Found",
+                    "No -p- / -RHO- file pairs were found in the selected folder."
+                )
+            else:
+                reply = QMessageBox.question(
+                    self,
+                    "File Pairs Found",
+                    f"Found {count} -p- / -RHO- file pair(s).\n\n"
+                    f"Generate .edge and .xlsx outputs for all pairs?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes
+                )
+                if reply == QMessageBox.Yes:
+                    self._run_batch()
 
     def _batch_output_name(self, filename):
         """Generate output name from filename: remove -p-/-RHO- and trailing numerics."""
